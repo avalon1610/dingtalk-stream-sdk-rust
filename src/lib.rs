@@ -133,7 +133,7 @@ impl Client {
                     match serde_json::from_str(&msg.data) {
                         Ok(msg) => {
                             if let Err(e) = callback(s.clone(), msg).await {
-                                error!("robot callback error: {:?}", e);
+                                error!("callback error: {:?}", e);
                             }
                         }
                         Err(e) => {
@@ -344,12 +344,12 @@ struct EndpointResponse {
     ticket: String,
 }
 
-const GATEWAY_URL: &'static str = "https://api.dingtalk.com/v1.0/gateway/connections/open";
-const GET_TOKEN_URL: &'static str = "https://oapi.dingtalk.com/gettoken";
+const GATEWAY_URL: &str = "https://api.dingtalk.com/v1.0/gateway/connections/open";
+const GET_TOKEN_URL: &str = "https://oapi.dingtalk.com/gettoken";
 /** robot message callback */
-pub const TOPIC_ROBOT: &'static str = "/v1.0/im/bot/messages/get";
+pub const TOPIC_ROBOT: &str = "/v1.0/im/bot/messages/get";
 /** card callback */
-pub const TOPIC_CARD: &'static str = "/v1.0/card/instances/callback";
+pub const TOPIC_CARD: &str = "/v1.0/card/instances/callback";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

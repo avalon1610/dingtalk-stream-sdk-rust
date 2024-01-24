@@ -2,9 +2,15 @@ use crate::Client;
 use anyhow::{bail, Result};
 use futures::{stream::SplitSink, SinkExt};
 use log::debug;
-use serde::Serialize;
-use std::sync::Arc;
-use tokio::net::TcpStream;
+use reqwest::{
+    multipart::{Form, Part},
+    Response,
+};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::Value;
+use std::{ffi::OsStr, path::Path, sync::Arc};
+use strum::Display;
+use tokio::{fs::File, net::TcpStream};
 use tokio_tungstenite::{tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
 pub(crate) type Sink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
@@ -27,6 +33,104 @@ impl Client {
 
         Ok(())
     }
+
+    pub(crate) async fn post_raw<T: Serialize>(
+        &self,
+        url: impl AsRef<str>,
+        data: T,
+    ) -> Result<Response> {
+        let access_token = self.config.lock().unwrap().other.access_token.clone();
+        let response = self
+            .client
+            .post(url.as_ref())
+            .header("x-acs-dingtalk-access-token", access_token)
+            .json(&data)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            bail!(
+                "post error: [{}] {:?}",
+                response.status(),
+                response.text().await?
+            );
+        }
+
+        Ok(response)
+    }
+
+    pub(crate) async fn post<T, U>(&self, url: impl AsRef<str>, data: T) -> Result<U>
+    where
+        T: Serialize,
+        U: DeserializeOwned,
+    {
+        let response = self.post_raw(url, data).await?;
+        let status = response.status();
+        let text = response.text().await?;
+        debug!("post ok: [{}] {}", status, text);
+        Ok(serde_json::from_str(&text)?)
+    }
+
+    /// upload file and return media id
+    pub async fn upload(&self, file: impl AsRef<Path>, file_type: UploadType) -> Result<String> {
+        let access_token = self.config.lock().unwrap().other.access_token.clone();
+        let file = file.as_ref();
+        let filename = file
+            .file_name()
+            .unwrap_or(OsStr::new("<unknown>"))
+            .to_string_lossy()
+            .to_string();
+        let file = File::open(file).await?;
+        let form = Form::new()
+            .part("media", Part::stream(file).file_name(filename))
+            .text("type", file_type.to_string());
+        let response = self
+            .client
+            .post(format!("{}?access_token={}", UPLOAD_URL, access_token))
+            .multipart(form)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            bail!(
+                "upload http error: {} - {}",
+                response.status(),
+                response.text().await?
+            );
+        }
+
+        let text = response.text().await?;
+        debug!("upload response: {}", text);
+        let res: UploadResult = serde_json::from_str(&text)?;
+        if res.errcode != 0 {
+            bail!("upload error: {} - {}", res.errcode, res.errmsg);
+        }
+
+        Ok(res.media_id)
+    }
+}
+
+#[derive(Deserialize)]
+struct UploadResult {
+    errcode: u32,
+    errmsg: String,
+    #[serde(default)]
+    media_id: String,
+    #[allow(dead_code)]
+    #[serde(default)]
+    created_at: u64,
+    #[allow(dead_code)]
+    #[serde(default)]
+    r#type: String,
+}
+
+#[derive(Display)]
+#[strum(serialize_all = "snake_case")]
+pub enum UploadType {
+    Image,
+    Voice,
+    Video,
+    File,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -75,11 +179,12 @@ pub struct RobotSendMessage {
     client: Arc<Client>,
 }
 
-const BATCH_SEND_URL: &'static str = "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend";
-const GROUP_SEND_URL: &'static str = "https://api.dingtalk.com/v1.0/robot/groupMessages/send";
+const BATCH_SEND_URL: &str = "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend";
+const GROUP_SEND_URL: &str = "https://api.dingtalk.com/v1.0/robot/groupMessages/send";
+const UPLOAD_URL: &str = "https://oapi.dingtalk.com/media/upload";
 
 impl RobotSendMessage {
-    /// send message back to group chat
+    /// construct message to group chat
     pub fn group(
         client: Arc<Client>,
         conversation_id: impl Into<String>,
@@ -97,47 +202,26 @@ impl RobotSendMessage {
         })
     }
 
+    /// send to constructed message
     pub async fn send(&self) -> Result<()> {
-        let access_token = self
-            .client
-            .config
-            .lock()
-            .unwrap()
-            .other
-            .access_token
-            .clone();
         debug!("send: {}", serde_json::to_string(self).unwrap());
-        let response = self
+        let _: Value = self
             .client
-            .client
-            .post({
-                match self.target {
-                    SendMessageTarget::Batch { .. } => BATCH_SEND_URL,
-                    SendMessageTarget::Group { .. } => GROUP_SEND_URL,
-                }
-            })
-            .header("x-acs-dingtalk-access-token", access_token)
-            .json(self)
-            .send()
+            .post(
+                {
+                    match self.target {
+                        SendMessageTarget::Batch { .. } => BATCH_SEND_URL,
+                        SendMessageTarget::Group { .. } => GROUP_SEND_URL,
+                    }
+                },
+                self,
+            )
             .await?;
 
-        if response.status().is_success() {
-            debug!(
-                "robot send ok: [{}] {:?}",
-                response.status(),
-                response.text().await?
-            );
-        } else {
-            bail!(
-                "robot send error: [{}] {:?}",
-                response.status(),
-                response.text().await?
-            );
-        }
         Ok(())
     }
 
-    ///  batch send message to multiple users
+    /// construct batch message to multiple users
     pub fn batch(
         client: Arc<Client>,
         user_ids: Vec<String>,
@@ -146,14 +230,14 @@ impl RobotSendMessage {
         let client_id = client.config.lock().unwrap().client_id.clone();
         Ok(Self {
             robot_code: client_id,
-            target: SendMessageTarget::Batch { user_ids: user_ids },
+            target: SendMessageTarget::Batch { user_ids },
             msg_key: message.to_string(),
             msg_param: message.try_into()?,
             client,
         })
     }
 
-    /// send message back to single user
+    /// construct message to single user
     pub fn single(client: Arc<Client>, user_id: String, message: MessageTemplate) -> Result<Self> {
         Self::batch(client, vec![user_id], message)
     }
@@ -193,23 +277,23 @@ pub enum SendMessageTarget {
 #[serde(rename_all = "camelCase", untagged)]
 #[strum(serialize_all = "camelCase")]
 pub enum MessageTemplate {
-    SampleText {
-        content: String,
-    },
-    SampleMarkdown {
-        title: String,
-        text: String,
-    },
+    #[serde(rename_all = "camelCase")]
+    SampleText { content: String },
+    #[serde(rename_all = "camelCase")]
+    SampleMarkdown { title: String, text: String },
+    #[serde(rename_all = "camelCase")]
     SampleImageMsg {
         #[serde(rename = "photoURL")]
         photo_url: String,
     },
+    #[serde(rename_all = "camelCase")]
     SampleLink {
         text: String,
         title: String,
         pic_url: String,
         message_url: String,
     },
+    #[serde(rename_all = "camelCase")]
     SampleActionCard {
         title: String,
         text: String,
@@ -217,6 +301,7 @@ pub enum MessageTemplate {
         #[serde(rename = "singleURL")]
         single_url: String,
     },
+    #[serde(rename_all = "camelCase")]
     SampleActionCard2 {
         title: String,
         text: String,
@@ -227,6 +312,7 @@ pub enum MessageTemplate {
         #[serde(rename = "actionURL2")]
         action_url_2: String,
     },
+    #[serde(rename_all = "camelCase")]
     SampleActionCard3 {
         title: String,
         text: String,
@@ -240,6 +326,7 @@ pub enum MessageTemplate {
         #[serde(rename = "actionURL3")]
         action_url_3: String,
     },
+    #[serde(rename_all = "camelCase")]
     SampleActionCard4 {
         title: String,
         text: String,
@@ -256,6 +343,7 @@ pub enum MessageTemplate {
         #[serde(rename = "actionURL4")]
         action_url_4: String,
     },
+    #[serde(rename_all = "camelCase")]
     SampleActionCard5 {
         title: String,
         text: String,
@@ -272,6 +360,7 @@ pub enum MessageTemplate {
         #[serde(rename = "actionURL4")]
         action_url_4: String,
     },
+    #[serde(rename_all = "camelCase")]
     SampleActionCard6 {
         title: String,
         text: String,
@@ -280,15 +369,15 @@ pub enum MessageTemplate {
         button_title_2: String,
         button_url_2: String,
     },
-    SampleAudio {
-        media_id: String,
-        duration: String,
-    },
+    #[serde(rename_all = "camelCase")]
+    SampleAudio { media_id: String, duration: String },
+    #[serde(rename_all = "camelCase")]
     SampleFile {
         media_id: String,
         file_name: String,
         file_type: String,
     },
+    #[serde(rename_all = "camelCase")]
     SampleVideo {
         duration: String,
         video_media_id: String,

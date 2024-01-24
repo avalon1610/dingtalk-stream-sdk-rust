@@ -1,9 +1,15 @@
 use crate::{up::ClientUpStream, Client};
-use anyhow::Result;
+use anyhow::{bail, Result};
+use futures::TryStreamExt;
 use log::{debug, error, warn};
 use serde::Deserialize;
 use serde_json::json;
-use std::sync::Arc;
+use std::{
+    io::{Error, ErrorKind},
+    sync::Arc,
+};
+use tokio::io::{copy, AsyncWrite};
+use tokio_util::io::StreamReader;
 
 impl Client {
     pub(crate) async fn on_down_stream(&self, p: ClientDownStream) -> Result<()> {
@@ -50,7 +56,46 @@ impl Client {
 
         Ok(())
     }
+
+    pub async fn download(
+        &self,
+        download_code: impl AsRef<str>,
+        mut writer: impl AsyncWrite + Unpin,
+    ) -> Result<()> {
+        let client_id = self.config.lock().unwrap().client_id.clone();
+        let response: DownloadUrl = self
+            .post(
+                DOWNLOAD_URL,
+                json!({ "downloadCode": download_code.as_ref(), "robotCode": client_id}),
+            )
+            .await?;
+
+        let response = self.client.get(response.download_url).send().await?;
+        if !response.status().is_success() {
+            bail!(
+                "download error: {} - {}",
+                response.status(),
+                response.text().await?
+            );
+        }
+
+        let mut reader = StreamReader::new(
+            response
+                .bytes_stream()
+                .map_err(|e| Error::new(ErrorKind::Other, e)),
+        );
+        copy(&mut reader, &mut writer).await?;
+
+        Ok(())
+    }
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadUrl {
+    download_url: String,
+}
+const DOWNLOAD_URL: &str = "https://api.dingtalk.com/v1.0/robot/messageFiles/download";
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
