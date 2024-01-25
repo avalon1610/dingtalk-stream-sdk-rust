@@ -1,3 +1,5 @@
+//! Types and methods that handle up to DingTalk server
+
 use crate::Client;
 use anyhow::{bail, Result};
 use futures::{stream::SplitSink, SinkExt};
@@ -39,7 +41,8 @@ impl Client {
         url: impl AsRef<str>,
         data: T,
     ) -> Result<Response> {
-        let access_token = self.config.lock().unwrap().other.access_token.clone();
+        let access_token = self.config.lock().unwrap().access_token.clone();
+        debug!("post with access token: {}", access_token);
         let response = self
             .client
             .post(url.as_ref())
@@ -71,9 +74,12 @@ impl Client {
         Ok(serde_json::from_str(&text)?)
     }
 
-    /// upload file and return media id
+    /// upload file and return media id for
+    /// - [`MessageTemplate::SampleFile`]
+    /// - [`MessageTemplate::SampleVideo`]
+    /// - [`MessageTemplate::SampleAudio`]
     pub async fn upload(&self, file: impl AsRef<Path>, file_type: UploadType) -> Result<String> {
-        let access_token = self.config.lock().unwrap().other.access_token.clone();
+        let access_token = self.config.lock().unwrap().access_token.clone();
         let file = file.as_ref();
         let filename = file
             .file_name()
@@ -99,9 +105,7 @@ impl Client {
             );
         }
 
-        let text = response.text().await?;
-        debug!("upload response: {}", text);
-        let res: UploadResult = serde_json::from_str(&text)?;
+        let res: UploadResult = response.json().await?;
         if res.errcode != 0 {
             bail!("upload error: {} - {}", res.errcode, res.errmsg);
         }
@@ -124,6 +128,7 @@ struct UploadResult {
     r#type: String,
 }
 
+/// Upload enum for [`Client::upload`]
 #[derive(Display)]
 #[strum(serialize_all = "snake_case")]
 pub enum UploadType {
@@ -135,7 +140,7 @@ pub enum UploadType {
 
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ClientUpStream {
+pub(crate) struct ClientUpStream {
     pub code: u32,
     pub headers: StreamUpHeader,
     pub message: String,
@@ -161,19 +166,23 @@ impl ClientUpStream {
 
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StreamUpHeader {
+pub(crate) struct StreamUpHeader {
     pub content_type: String, // always application/json
     pub message_id: String,   // same StreamDownHeaders::message_id
 }
 
+/// Message type to be sent to DingTalk server
+///
+/// Please refer to the official document [batches](https://open.dingtalk.com/document/orgapp/chatbots-send-one-on-one-chat-messages-in-batches) and
+/// [group](https://open.dingtalk.com/document/orgapp/the-robot-sends-a-group-message) for more detail
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RobotSendMessage {
-    pub robot_code: String,
+    robot_code: String,
     #[serde(flatten)]
-    pub target: SendMessageTarget,
-    pub msg_key: String,
-    pub msg_param: String,
+    target: SendMessageTarget,
+    msg_key: String,
+    msg_param: String,
 
     #[serde(skip_serializing)]
     client: Arc<Client>,
@@ -243,6 +252,9 @@ impl RobotSendMessage {
     }
 }
 
+/// Event ack message type
+///
+/// Found it in other programming language's SDK, not found in any official document though.
 #[derive(Serialize)]
 pub struct EventAckData {
     pub status: &'static str,
@@ -266,13 +278,16 @@ impl EventAckData {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase", untagged)]
-pub enum SendMessageTarget {
+enum SendMessageTarget {
     #[serde(rename_all = "camelCase")]
     Group { open_conversation_id: String },
     #[serde(rename_all = "camelCase")]
     Batch { user_ids: Vec<String> },
 }
 
+/// Message enum to be sent to DingTalk server
+///
+/// Please refer to the [official document](https://open.dingtalk.com/document/orgapp/types-of-messages-sent-by-robots) for the definition of each field
 #[derive(Serialize, strum::Display)]
 #[serde(rename_all = "camelCase", untagged)]
 #[strum(serialize_all = "camelCase")]

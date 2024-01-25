@@ -1,6 +1,32 @@
+//! This an **UNOFFICIAL** Rust SDK focused on the development of DingTalk robots.
+//!
+//! *USE IT ON YOUR OWN RISK*
+//!
+//! Reference to DingTalk open platform docs [here](https://open.dingtalk.com/document/orgapp/robot-overview)
+//!
+//! The functions included in SDK:
+//! - Receive message from conversation between user and robot
+//!     - [`Client::register_callback_listener`]
+//!     - where [`RobotRecvMessage::conversation_type`] == 1
+//! - Receive message from group conversation when robot has been @
+//!     - [`Client::register_callback_listener`]
+//!     - where [`RobotRecvMessage::conversation_type`] == 2
+//! - Send various types of message to bulk users (or single user)
+//!     - [`RobotSendMessage::single`](up::RobotSendMessage::single)
+//!     - [`RobotSendMessage::batch`](up::RobotSendMessage::batch)
+//!     - [`RobotSendMessage::send`](up::RobotSendMessage::send)
+//! - Send message to specific group conversation
+//!     - [`RobotSendMessage::group`](up::RobotSendMessage::group)
+//!     - [`RobotSendMessage::send`](up::RobotSendMessage::send)
+//! - Download media file user sent
+//!     - [`Client::download`]
+//! - Upload media file sent to users
+//!     - [`Client::upload`]
+//!
+//! See more details in examples
 use anyhow::{bail, Result};
 use async_broadcast::{Receiver, Sender};
-use down::{ClientDownStream, RobotRecvMessage};
+use down::{ClientDownStream, EventData, RobotRecvMessage};
 use futures::{stream::SplitStream, Future, StreamExt};
 use log::{debug, error, info, trace, warn};
 use native_tls::TlsConnector;
@@ -25,10 +51,12 @@ use up::{EventAckData, Sink};
 pub mod down;
 pub mod up;
 
+/// An asynchronous [`Client`] to interactive with DingTalk server
+///
+/// Using websocket fro receiving message and https for sending
 #[derive(Debug)]
 pub struct Client {
-    reconnect_interval: u64,
-    heartbeat_interval: u64,
+    /// config inside client can be adjusted
     pub config: Arc<Mutex<ClientConfig>>,
     client: reqwest::Client,
     rx: Receiver<Arc<ClientDownStream>>,
@@ -38,7 +66,7 @@ pub struct Client {
     alive: AtomicBool,
 }
 
-struct EventCallback(RwLock<Box<dyn Fn(ClientDownStream) -> EventAckData + Send + Sync>>);
+struct EventCallback(RwLock<Box<dyn Fn(EventData) -> EventAckData + Send + Sync>>);
 
 impl std::fmt::Debug for EventCallback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -65,8 +93,6 @@ impl Client {
                 .no_proxy()
                 .danger_accept_invalid_certs(true)
                 .build()?,
-            reconnect_interval: 1000,
-            heartbeat_interval: 8000,
             tx,
             rx,
             sink: tokio::sync::Mutex::new(None),
@@ -84,9 +110,17 @@ impl Client {
         self
     }
 
-    /// Enable or disable client side keep alive heartbeat, default is false
-    pub fn keep_alive(self: Arc<Self>, value: bool) -> Arc<Self> {
-        self.config.lock().unwrap().other.keep_alive = value;
+    /// Control client side keep alive heartbeat interval(ms), default is 8000.  
+    /// When set to 0, means disable keep alive heartbeat.
+    pub fn keep_alive(self: Arc<Self>, value: u64) -> Arc<Self> {
+        self.config.lock().unwrap().heartbeat_interval = value;
+        self
+    }
+
+    /// Control client reconnect when websocket disconnected(ms), default is 1000ms.  
+    /// When set to 0, means disable reconnect.
+    pub fn reconnect(self: Arc<Self>, value: u64) -> Arc<Self> {
+        self.config.lock().unwrap().reconnect_interval = value;
         self
     }
 
@@ -94,7 +128,7 @@ impl Client {
     /// Calling this interface multiple times will replace the old listener with a new one.
     pub fn register_all_event_listener<P>(self: Arc<Self>, on_event_received: P) -> Arc<Self>
     where
-        P: Fn(ClientDownStream) -> EventAckData + Send + Sync + 'static,
+        P: Fn(EventData) -> EventAckData + Send + Sync + 'static,
     {
         *self.on_event_callback.0.write().unwrap() = Box::new(on_event_received);
         self
@@ -172,7 +206,7 @@ impl Client {
 
         debug!("get token: {:?}", token);
         let token = token.access_token;
-        self.config.lock().unwrap().other.access_token = token.clone();
+        self.config.lock().unwrap().access_token = token.clone();
 
         let response = self
             .client
@@ -227,7 +261,8 @@ impl Client {
         let (sink, stream) = stream.split();
         *self.sink.lock().await = Some(sink);
         let aborting = Arc::new(Notify::new());
-        if self.config.lock().unwrap().other.keep_alive {
+        let heartbeat_interval = self.config.lock().unwrap().heartbeat_interval;
+        if heartbeat_interval > 0 {
             tokio::spawn({
                 let s = self.clone();
                 let aborting = aborting.clone();
@@ -241,7 +276,7 @@ impl Client {
                         trace!("websocket ping");
                         s.alive.store(false, Ordering::SeqCst);
                         let _ = s.ping().await;
-                        sleep(Duration::from_millis(s.heartbeat_interval)).await;
+                        sleep(Duration::from_millis(heartbeat_interval)).await;
                     }
                 }
             });
@@ -305,20 +340,18 @@ impl Client {
         Ok(())
     }
 
-    /// connect to api gateway, and begin the websocket stream process
+    /// Connect to api gateway, and begin the websocket stream process
     pub async fn connect(self: Arc<Self>) -> Result<()> {
         loop {
             let c = self.clone();
+            let reconnect_interval = c.config.lock().unwrap().reconnect_interval;
             let url = c.get_endpoint().await?;
             c.serve(url).await?;
 
-            if c.config.lock().unwrap().other.auto_reconnect {
-                debug!(
-                    "Reconnecting in {} seconds...",
-                    self.reconnect_interval / 1000
-                );
+            if reconnect_interval > 0 {
+                info!("Reconnecting in {} seconds...", reconnect_interval / 1000);
 
-                sleep(Duration::from_millis(self.reconnect_interval)).await;
+                sleep(Duration::from_millis(reconnect_interval)).await;
                 debug!("initial reconnecting...");
             } else {
                 break;
@@ -346,20 +379,29 @@ struct EndpointResponse {
 
 const GATEWAY_URL: &str = "https://api.dingtalk.com/v1.0/gateway/connections/open";
 const GET_TOKEN_URL: &str = "https://oapi.dingtalk.com/gettoken";
-/** robot message callback */
+/// used for register robot message callback
 pub const TOPIC_ROBOT: &str = "/v1.0/im/bot/messages/get";
-/** card callback */
+/// used for register card callback
 pub const TOPIC_CARD: &str = "/v1.0/card/instances/callback";
 
+/// Client config that need to be sent to DingTalk server to get endpoint
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientConfig {
+    /// Client id also known as AppKey in DingTalk Backend
     pub client_id: String,
+    /// Client secret also known as AppSecret in DingTalk Backend
     pub client_secret: String,
+    /// User-Agent sent to server
     pub ua: String,
+    /// Subscriptions defines the types of event that you are concerned about
     pub subscriptions: Vec<Subscription>,
     #[serde(skip_serializing)]
-    pub other: OtherConfig,
+    access_token: String,
+    #[serde(skip_serializing)]
+    reconnect_interval: u64,
+    #[serde(skip_serializing)]
+    heartbeat_interval: u64,
 }
 
 impl Default for ClientConfig {
@@ -378,30 +420,23 @@ impl Default for ClientConfig {
                     topic: "*".to_owned(),
                 },
             ],
-            other: Default::default(),
+            access_token: String::new(),
+            reconnect_interval: 1000,
+            heartbeat_interval: 8000,
         }
     }
 }
 
-#[derive(Debug)]
-pub struct OtherConfig {
-    pub keep_alive: bool,
-    pub access_token: String,
-    pub auto_reconnect: bool,
-}
-
-impl Default for OtherConfig {
-    fn default() -> Self {
-        Self {
-            keep_alive: true,
-            access_token: Default::default(),
-            auto_reconnect: true,
-        }
-    }
-}
-
+/// Definition of subscription types registered with the DingTalk server
 #[derive(Debug, Serialize)]
 pub struct Subscription {
+    /// Type
+    /// - EVENT
+    /// - SYSTEM
+    /// - CALLBACK
     pub r#type: String,
+    /// Topic
+    /// - "/v1.0/im/bot/messages/get";
+    /// - "/v1.0/card/instances/callback";
     pub topic: String,
 }

@@ -1,3 +1,5 @@
+//! Types and methods that handles down from DingTalk server
+
 use crate::{up::ClientUpStream, Client};
 use anyhow::{bail, Result};
 use futures::TryStreamExt;
@@ -15,7 +17,7 @@ impl Client {
     pub(crate) async fn on_down_stream(&self, p: ClientDownStream) -> Result<()> {
         match p.r#type.as_str() {
             "SYSTEM" => self.on_system(p).await?,
-            "EVENT" => self.on_event(p).await?,
+            "EVENT" => self.on_event(p.headers.message_id, p.headers.event).await?,
             "CALLBACK" => {
                 let msg = ClientUpStream::new(
                     serde_json::to_string(&json!({"response" : {}}))?,
@@ -30,9 +32,8 @@ impl Client {
         Ok(())
     }
 
-    async fn on_event(&self, p: ClientDownStream) -> Result<()> {
+    async fn on_event(&self, message_id: impl Into<String>, p: EventData) -> Result<()> {
         debug!("event received: {:?}", p);
-        let message_id = p.headers.message_id.clone();
         let ack = self.on_event_callback.0.read().unwrap()(p);
         let msg = ClientUpStream::new(serde_json::to_string(&ack)?, message_id);
         self.send(msg).await?;
@@ -57,6 +58,7 @@ impl Client {
         Ok(())
     }
 
+    /// download file from download_code
     pub async fn download(
         &self,
         download_code: impl AsRef<str>,
@@ -99,7 +101,8 @@ const DOWNLOAD_URL: &str = "https://api.dingtalk.com/v1.0/robot/messageFiles/dow
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ClientDownStream {
+#[allow(dead_code)]
+pub(crate) struct ClientDownStream {
     pub spec_version: String,
     pub r#type: String,
     pub headers: StreamDownHeaders,
@@ -108,7 +111,8 @@ pub struct ClientDownStream {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StreamDownHeaders {
+#[allow(dead_code)]
+pub(crate) struct StreamDownHeaders {
     #[serde(default)]
     pub app_id: String,
     #[serde(default)]
@@ -117,6 +121,16 @@ pub struct StreamDownHeaders {
     pub message_id: String,
     pub time: String,
     pub topic: String,
+    #[serde(flatten)]
+    pub event: EventData,
+}
+
+/// Event type pushed by DingTalk server
+///
+/// Please refer to the [official document](https://open.dingtalk.com/document/orgapp/org-event-overview) for the definition of each field
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventData {
     #[serde(default)]
     pub event_type: String,
     #[serde(default)]
@@ -129,6 +143,9 @@ pub struct StreamDownHeaders {
     pub event_unified_app_id: String,
 }
 
+/// Message type pushed by DingTalk server
+///
+/// Please refer to the [official document](https://open.dingtalk.com/document/orgapp/receive-message) for the definition of each field
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct RobotRecvMessage {
@@ -168,6 +185,9 @@ pub struct RobotRecvMessage {
     pub create_at: u64,
 }
 
+/// At(@) User type
+///
+/// Please refer to the [official document](https://open.dingtalk.com/document/orgapp/receive-message) for the definition of each field
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct User {
@@ -176,6 +196,9 @@ pub struct User {
     pub staff_id: String,
 }
 
+/// Enumeration types for all received messages
+///
+/// Please refer to the [official document](https://open.dingtalk.com/document/orgapp/receive-message) for the definition of each field
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase", untagged)]
 pub enum MsgContent {
@@ -210,6 +233,9 @@ pub enum MsgContent {
     UnknownMsgType { unknown_msg_type: String },
 }
 
+/// Enumeration types for rich text
+///
+/// Please refer to the [official document](https://open.dingtalk.com/document/orgapp/receive-message) for the definition of each field
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase", untagged)]
 pub enum RichText {
