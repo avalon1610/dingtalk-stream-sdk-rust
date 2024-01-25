@@ -9,13 +9,9 @@ use log::{debug, info};
 use rand::{distributions::Alphanumeric, Rng};
 use tokio::fs::File;
 
-// const CLIENT_ID: &'static str = "ding2kdwyyilaknq8zj5";
-// const CLIENT_SECRET: &'static str =
-//     "vlDWox885jMZQLm5cQ6lBTtdjqQXEfK-PK5dIL29tPECYdAE0i1A_7wum76BLxzO";
-
-const CLIENT_ID: &'static str = "ding7jysiq3otlsn9ksw";
+const CLIENT_ID: &'static str = "ding2kdwyyilaknq8zj5";
 const CLIENT_SECRET: &'static str =
-    "fr90usMkWe0CImJ-S8tv2HNqnSpKNDlEt8kAf2vuFMPdplXXhwm0W00CvqsYE9eu";
+    "vlDWox885jMZQLm5cQ6lBTtdjqQXEfK-PK5dIL29tPECYdAE0i1A_7wum76BLxzO";
 
 #[tokio::main]
 async fn main() -> Result<()> {
