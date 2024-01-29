@@ -24,5 +24,7 @@ The functions included in SDK:
     - [`Client::download`]
 - Upload media file sent to users
     - [`Client::upload`]
+- Create group chat
+    - [`Client::create_group`]
 
 See more details in examples

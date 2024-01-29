@@ -22,10 +22,13 @@
 //!     - [`Client::download`]
 //! - Upload media file sent to users
 //!     - [`Client::upload`]
+//! - Create group chat
+//!     - [`Client::create_group`]
 //!
 //! See more details in examples
 use anyhow::{bail, Result};
 use async_broadcast::{Receiver, Sender};
+use chrono::{DateTime, Duration, Local};
 use down::{ClientDownStream, EventData, RobotRecvMessage};
 use futures::{stream::SplitStream, Future, StreamExt};
 use log::{debug, error, info, trace, warn};
@@ -36,11 +39,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex, RwLock,
 };
-use tokio::{
-    net::TcpStream,
-    sync::Notify,
-    time::{sleep, Duration},
-};
+use tokio::{net::TcpStream, sync::Notify, time::sleep};
 use tokio_tungstenite::{
     connect_async_tls_with_config,
     tungstenite::{Error, Message},
@@ -49,6 +48,7 @@ use tokio_tungstenite::{
 use up::{EventAckData, Sink};
 
 pub mod down;
+pub mod group;
 pub mod up;
 
 /// An asynchronous [`Client`] to interactive with DingTalk server
@@ -64,6 +64,8 @@ pub struct Client {
     on_event_callback: EventCallback,
     sink: tokio::sync::Mutex<Option<Sink>>,
     alive: AtomicBool,
+    user_exit: AtomicBool,
+    aborting: Arc<Notify>,
 }
 
 struct EventCallback(RwLock<Box<dyn Fn(EventData) -> EventAckData + Send + Sync>>);
@@ -101,6 +103,8 @@ impl Client {
                 EventAckData::default()
             }))),
             alive: AtomicBool::new(false),
+            user_exit: AtomicBool::new(false),
+            aborting: Arc::new(Notify::new()),
         }))
     }
 
@@ -112,14 +116,14 @@ impl Client {
 
     /// Control client side keep alive heartbeat interval(ms), default is 8000.  
     /// When set to 0, means disable keep alive heartbeat.
-    pub fn keep_alive(self: Arc<Self>, value: u64) -> Arc<Self> {
+    pub fn keep_alive(self: Arc<Self>, value: i64) -> Arc<Self> {
         self.config.lock().unwrap().heartbeat_interval = value;
         self
     }
 
     /// Control client reconnect when websocket disconnected(ms), default is 1000ms.  
     /// When set to 0, means disable reconnect.
-    pub fn reconnect(self: Arc<Self>, value: u64) -> Arc<Self> {
+    pub fn reconnect(self: Arc<Self>, value: i64) -> Arc<Self> {
         self.config.lock().unwrap().reconnect_interval = value;
         self
     }
@@ -181,7 +185,21 @@ impl Client {
         self
     }
 
-    async fn get_endpoint(&self) -> Result<String> {
+    pub(crate) async fn token(&self) -> Result<String> {
+        let (access_token, token_expires_in) = {
+            let config = self.config.lock().unwrap();
+            (config.access_token.clone(), config.token_expires_in)
+        };
+
+        Ok(if Local::now() > token_expires_in {
+            debug!("token expired, get token again");
+            self.get_token().await?
+        } else {
+            access_token
+        })
+    }
+
+    async fn get_token(&self) -> Result<String> {
         let url = {
             let config = self.config.lock().unwrap();
             debug!("get connect endpoint by config {:#?}", *config);
@@ -201,12 +219,23 @@ impl Client {
 
         let token: TokenResponse = response.json().await?;
         if token.errcode != 0 {
-            bail!("get token content error: {:?}", token);
+            bail!(
+                "get token content error: {} - {}",
+                token.errcode,
+                token.errmsg
+            );
         }
 
         debug!("get token: {:?}", token);
-        let token = token.access_token;
-        self.config.lock().unwrap().access_token = token.clone();
+        let access_token = token.access_token;
+        let mut config = self.config.lock().unwrap();
+        config.access_token = access_token.clone();
+        config.token_expires_in = Local::now() + Duration::seconds(token.expires_in as i64);
+        Ok(access_token)
+    }
+
+    async fn get_endpoint(&self) -> Result<String> {
+        let token = self.get_token().await?;
 
         let response = self
             .client
@@ -260,12 +289,11 @@ impl Client {
 
         let (sink, stream) = stream.split();
         *self.sink.lock().await = Some(sink);
-        let aborting = Arc::new(Notify::new());
         let heartbeat_interval = self.config.lock().unwrap().heartbeat_interval;
         if heartbeat_interval > 0 {
             tokio::spawn({
                 let s = self.clone();
-                let aborting = aborting.clone();
+                let aborting = self.aborting.clone();
                 async move {
                     loop {
                         if !s.alive.load(Ordering::SeqCst) {
@@ -276,14 +304,15 @@ impl Client {
                         trace!("websocket ping");
                         s.alive.store(false, Ordering::SeqCst);
                         let _ = s.ping().await;
-                        sleep(Duration::from_millis(heartbeat_interval)).await;
+                        // heartbeat_interval is always larger than zero, to_std() never failed. unwrap is safe here
+                        sleep(Duration::milliseconds(heartbeat_interval).to_std().unwrap()).await;
                     }
                 }
             });
         }
 
         tokio::select! {
-            _ = aborting.notified() => { warn!("server not responsed, aborting"); }
+            _ = self.aborting.notified() => { warn!("server aborting"); }
             _ = self.process(stream) => { warn!("server error or closed"); }
         }
 
@@ -348,10 +377,11 @@ impl Client {
             let url = c.get_endpoint().await?;
             c.serve(url).await?;
 
-            if reconnect_interval > 0 {
+            if reconnect_interval > 0 && !self.user_exit.load(Ordering::SeqCst) {
                 info!("Reconnecting in {} seconds...", reconnect_interval / 1000);
 
-                sleep(Duration::from_millis(reconnect_interval)).await;
+                // reconnect_interval is always larger than zero, to_std() never failed. unwrap is safe here
+                sleep(Duration::milliseconds(reconnect_interval).to_std().unwrap()).await;
                 debug!("initial reconnecting...");
             } else {
                 break;
@@ -360,10 +390,14 @@ impl Client {
 
         Ok(())
     }
+
+    pub fn exit(&self) {
+        self.user_exit.store(true, Ordering::SeqCst);
+        self.aborting.notify_waiters();
+    }
 }
 
 #[derive(Deserialize, Debug)]
-#[allow(dead_code)]
 struct TokenResponse {
     errcode: u32,
     access_token: String,
@@ -399,9 +433,11 @@ pub struct ClientConfig {
     #[serde(skip_serializing)]
     access_token: String,
     #[serde(skip_serializing)]
-    reconnect_interval: u64,
+    token_expires_in: DateTime<Local>,
     #[serde(skip_serializing)]
-    heartbeat_interval: u64,
+    reconnect_interval: i64,
+    #[serde(skip_serializing)]
+    heartbeat_interval: i64,
 }
 
 impl Default for ClientConfig {
@@ -421,6 +457,7 @@ impl Default for ClientConfig {
                 },
             ],
             access_token: String::new(),
+            token_expires_in: Local::now(),
             reconnect_interval: 1000,
             heartbeat_interval: 8000,
         }

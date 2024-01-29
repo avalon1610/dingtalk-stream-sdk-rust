@@ -41,7 +41,7 @@ impl Client {
         url: impl AsRef<str>,
         data: T,
     ) -> Result<Response> {
-        let access_token = self.config.lock().unwrap().access_token.clone();
+        let access_token = self.token().await?;
         debug!("post with access token: {}", access_token);
         let response = self
             .client
@@ -79,7 +79,7 @@ impl Client {
     /// - [`MessageTemplate::SampleVideo`]
     /// - [`MessageTemplate::SampleAudio`]
     pub async fn upload(&self, file: impl AsRef<Path>, file_type: UploadType) -> Result<String> {
-        let access_token = self.config.lock().unwrap().access_token.clone();
+        let access_token = self.token().await?;
         let file = file.as_ref();
         let filename = file
             .file_name()
