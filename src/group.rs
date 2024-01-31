@@ -1,12 +1,15 @@
 use crate::Client;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 const CREATE_URL: &str = "https://oapi.dingtalk.com/chat/create";
+const DISSOLVE_URL: &str =
+    "https://api.dingtalk.com/v1.0/devicemng/customers/chatRooms/groups/dissolve";
 
 impl Client {
-    /// create group via [`CreateRequest`], return group conversation_id
-    pub async fn create_group(&self, req: CreateRequest) -> Result<String> {
+    /// create group via [`CreateRequest`], return group (open_conversation_id, chatid)
+    pub async fn create_group(&self, req: CreateRequest) -> Result<(String, String)> {
         let token = self.token().await?;
         let resp: CreateResposne = self
             .post(format!("{}?access_token={}", CREATE_URL, token), req)
@@ -16,8 +19,29 @@ impl Client {
             bail!("create group error: {} - {}", resp.errcode, resp.errmsg);
         }
 
-        Ok(resp.open_conversation_id)
+        Ok((resp.open_conversation_id, resp.chatid))
     }
+
+    /// dissolve group via `open_conversation_id`
+    pub async fn dissolve_group(&self, open_conversation_id: impl Into<String>) -> Result<()> {
+        let response: DissolveResponse = self
+            .post(
+                DISSOLVE_URL,
+                json!({"openConversationId": open_conversation_id.into()}),
+            )
+            .await?;
+        if !response.success {
+            bail!("dissolve group error: {}", response.result);
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+struct DissolveResponse {
+    success: bool,
+    result: String,
 }
 
 /// group create request
@@ -70,8 +94,10 @@ struct CreateResposne {
     #[serde(default)]
     open_conversation_id: String,
     #[serde(default)]
+    chatid: String,
+    #[serde(default)]
     #[allow(dead_code)]
-    conversation_tag: String,
+    conversation_tag: u32,
     errmsg: String,
     errcode: u32,
 }

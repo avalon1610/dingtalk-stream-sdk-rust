@@ -58,12 +58,8 @@ impl Client {
         Ok(())
     }
 
-    /// download file from download_code
-    pub async fn download(
-        &self,
-        download_code: impl AsRef<str>,
-        mut writer: impl AsyncWrite + Unpin,
-    ) -> Result<()> {
+    /// get download url instead of download it
+    pub async fn download_url(&self, download_code: impl AsRef<str>) -> Result<String> {
         let client_id = self.config.lock().unwrap().client_id.clone();
         let response: DownloadUrl = self
             .post(
@@ -71,8 +67,17 @@ impl Client {
                 json!({ "downloadCode": download_code.as_ref(), "robotCode": client_id}),
             )
             .await?;
+        Ok(response.download_url)
+    }
 
-        let response = self.client.get(response.download_url).send().await?;
+    /// download file from download_code
+    pub async fn download(
+        &self,
+        download_code: impl AsRef<str>,
+        mut writer: impl AsyncWrite + Unpin,
+    ) -> Result<()> {
+        let download_url = self.download_url(download_code).await?;
+        let response = self.client.get(download_url).send().await?;
         if !response.status().is_success() {
             bail!(
                 "download error: {} - {}",
