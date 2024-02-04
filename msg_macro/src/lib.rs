@@ -79,8 +79,8 @@ fn parse(input: TokenStream) -> Result<TokenStream, Error> {
     let enum_name = Ident::new(&format!("SampleActionCard{count}"), Span::call_site());
     let quote = quote! {
         MessageTemplate::#enum_name {
-            title: #(#title.to_owned())*,
-            text: #(#text)*,
+            title: #(#title)*.to_owned(),
+            text: #(#text)*.to_owned(),
             #(#actions_expanded)*
         }
     };
