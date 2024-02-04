@@ -247,8 +247,12 @@ impl RobotSendMessage {
     }
 
     /// construct message to single user
-    pub fn single(client: Arc<Client>, user_id: String, message: MessageTemplate) -> Result<Self> {
-        Self::batch(client, vec![user_id], message)
+    pub fn single(
+        client: Arc<Client>,
+        user_id: impl Into<String>,
+        message: MessageTemplate,
+    ) -> Result<Self> {
+        Self::batch(client, vec![user_id.into()], message)
     }
 }
 
@@ -288,7 +292,7 @@ enum SendMessageTarget {
 /// Message enum to be sent to DingTalk server
 ///
 /// Please refer to the [official document](https://open.dingtalk.com/document/orgapp/types-of-messages-sent-by-robots) for the definition of each field
-#[derive(Serialize, strum::Display)]
+#[derive(Serialize, strum::Display, Clone)]
 #[serde(rename_all = "camelCase", untagged)]
 #[strum(serialize_all = "camelCase")]
 pub enum MessageTemplate {
@@ -374,6 +378,9 @@ pub enum MessageTemplate {
         action_title_4: String,
         #[serde(rename = "actionURL4")]
         action_url_4: String,
+        action_title_5: String,
+        #[serde(rename = "actionURL5")]
+        action_url_5: String,
     },
     #[serde(rename_all = "camelCase")]
     SampleActionCard6 {

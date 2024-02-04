@@ -21,6 +21,7 @@ strum = { version = "0.26.1", features = ["derive"] }
 bytes = "1.5.0"
 tokio-util = { version = "0.7.10", features = ["io"] }
 chrono = { version = "0.4.33", default-features = false, features = ["clock"] }
+msg_macro = { path = "./msg_macro" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

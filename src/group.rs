@@ -1,11 +1,10 @@
+//! Types and methods to create group
+// 
 use crate::Client;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 const CREATE_URL: &str = "https://oapi.dingtalk.com/chat/create";
-const DISSOLVE_URL: &str =
-    "https://api.dingtalk.com/v1.0/devicemng/customers/chatRooms/groups/dissolve";
 
 impl Client {
     /// create group via [`CreateRequest`], return group (open_conversation_id, chatid)
@@ -21,27 +20,6 @@ impl Client {
 
         Ok((resp.open_conversation_id, resp.chatid))
     }
-
-    /// dissolve group via `open_conversation_id`
-    pub async fn dissolve_group(&self, open_conversation_id: impl Into<String>) -> Result<()> {
-        let response: DissolveResponse = self
-            .post(
-                DISSOLVE_URL,
-                json!({"openConversationId": open_conversation_id.into()}),
-            )
-            .await?;
-        if !response.success {
-            bail!("dissolve group error: {}", response.result);
-        }
-
-        Ok(())
-    }
-}
-
-#[derive(Deserialize)]
-struct DissolveResponse {
-    success: bool,
-    result: String,
 }
 
 /// group create request

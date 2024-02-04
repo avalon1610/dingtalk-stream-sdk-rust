@@ -324,6 +324,7 @@ dependencies = [
  "futures",
  "indoc",
  "log",
+ "msg_macro",
  "native-tls",
  "rand",
  "reqwest",
@@ -815,6 +816,15 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.48.0",
+]
+
+[[package]]
+name = "msg_macro"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

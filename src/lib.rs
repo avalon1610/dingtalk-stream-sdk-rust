@@ -4,6 +4,8 @@
 //!
 //! Reference to DingTalk open platform docs [here](https://open.dingtalk.com/document/orgapp/robot-overview)
 //!
+//! # Major Function
+//!
 //! The functions included in SDK:
 //! - Receive message from conversation between user and robot
 //!     - [`Client::register_callback_listener`]
@@ -26,6 +28,12 @@
 //!     - [`Client::create_group`]
 //!
 //! See more details in examples
+//!
+//! # Additional helper proc-macro
+//!
+//! provide a proc-macro to make construct [`SampleActionCard2`](up::MessageTemplate::SampleActionCard2) ~ [`SampleActionCard5`](up::MessageTemplate::SampleActionCard5) more convernient.  
+//! see more in [action_card!](`msg_macro::action_card`)
+//!
 use anyhow::{bail, Result};
 use async_broadcast::{Receiver, Sender};
 use chrono::{DateTime, Duration, Local};
@@ -50,6 +58,7 @@ use up::{EventAckData, Sink};
 pub mod down;
 pub mod group;
 pub mod up;
+pub use msg_macro::action_card;
 
 /// An asynchronous [`Client`] to interactive with DingTalk server
 ///
