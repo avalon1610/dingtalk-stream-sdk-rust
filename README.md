@@ -6,6 +6,8 @@ This an **UNOFFICIAL** Rust SDK focused on the development of DingTalk robots.
 
 Reference to DingTalk open platform docs [here](https://open.dingtalk.com/document/orgapp/robot-overview)
 
+## Major Function
+
 The functions included in SDK:
 - Receive message from conversation between user and robot
     - [`Client::register_callback_listener`]
@@ -28,3 +30,9 @@ The functions included in SDK:
     - [`Client::create_group`]
 
 See more details in examples
+
+## Additional helper proc-macro
+
+provide a proc-macro to make construct [`SampleActionCard2`](up::MessageTemplate::SampleActionCard2) ~ [`SampleActionCard5`](up::MessageTemplate::SampleActionCard5) more convernient.
+see more in [action_card!](`msg_macro::action_card`)
+

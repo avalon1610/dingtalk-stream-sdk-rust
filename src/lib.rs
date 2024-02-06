@@ -58,7 +58,7 @@ use up::{EventAckData, Sink};
 pub mod down;
 pub mod group;
 pub mod up;
-pub use msg_macro::action_card;
+pub use dingtalk_stream_sdk_rust_macro::action_card;
 
 /// An asynchronous [`Client`] to interactive with DingTalk server
 ///
